@@ -248,36 +248,53 @@
             "type": "Microsoft.Solutions.ArmApiControl",
             "request": {
               "method": "GET",
-              "path": "[concat(subscription().id, '/providers/Microsoft.DBforPostgreSQL/locations/', if(equals(steps('size').dbRegion, 'same'), location(), steps('size').dbRegion), '/capabilities?api-version=2024-08-01')]"
+              "path": "[concat(subscription().id, '/providers/Microsoft.DBforPostgreSQL/locations/', if(equals(steps('size').dbRegion, 'same'), location(), steps('size').dbRegion), '/capabilities?api-version=2025-08-01')]"
             }
           },
           {
-            "name": "skuMissing",
+            "name": "dbRegionUnavailable",
             "type": "Microsoft.Common.InfoBox",
-            "visible": "[and(contains(string(steps('size').skuApi), 'supportedServerEditions'), not(contains(string(steps('size').skuApi), steps('size').dbSize.sku)))]",
+            "visible": "[and(contains(replace(string(steps('size').skuApi), ' ', ''), '\"value\":['), or(not(contains(replace(string(steps('size').skuApi), ' ', ''), '\"supportedServerVersions\":[{')), not(contains(replace(string(steps('size').skuApi), ' ', ''), '\"name\":\"17\"')), not(contains(replace(string(steps('size').skuApi), ' ', ''), concat('\"name\":\"', steps('size').dbSize.sku, '\"'))), or(contains(replace(string(steps('size').skuApi), ' ', ''), '\"restricted\":\"Enabled\"'), contains(replace(string(steps('size').skuApi), ' ', ''), '\"name\":\"OfferRestricted\",\"status\":\"Enabled\"'), contains(replace(string(steps('size').skuApi), ' ', ''), '\"status\":\"Enabled\",\"name\":\"OfferRestricted\"'))))]",
             "options": {
               "icon": "Error",
-              "text": "Azure says the size you chose is NOT offered to this subscription in this database region. Choose another Database region above (East US 2, Central US and West US 3 often work), or upgrade the subscription to Pay-As-You-Go. Do not pick a bigger size just to get past this: it costs many times more. Nothing is switched for you.",
+              "text": "[concat('Azure doesn’t offer PostgreSQL databases to your subscription in ', if(equals(steps('size').dbRegion, 'same'), location(), steps('size').dbRegion), '. Choose another database region (for example East US 2, Central US or West US 3) — the portal and API can stay where they are. ', if(or(contains(replace(string(steps('size').skuApi), ' ', ''), '\"restricted\":\"Enabled\"'), contains(replace(string(steps('size').skuApi), ' ', ''), '\"name\":\"OfferRestricted\",\"status\":\"Enabled\"'), contains(replace(string(steps('size').skuApi), ' ', ''), '\"status\":\"Enabled\",\"name\":\"OfferRestricted\"')), 'Azure reports this region as restricted for your subscription.', if(not(contains(replace(string(steps('size').skuApi), ' ', ''), '\"supportedServerVersions\":[{')), 'Azure lists no PostgreSQL versions there for your subscription, so the deployment would fail with ParameterOutOfRange.', if(not(contains(replace(string(steps('size').skuApi), ' ', ''), '\"name\":\"17\"')), 'Azure does not list PostgreSQL 17, the version GMSP installs, there for your subscription.', concat('Azure does not list the size you chose (', steps('size').dbSize.sku, ') there for your subscription.')))), ' Nothing is switched for you, and a bigger, more expensive size is not the fix.')]",
               "uri": "https://learn.microsoft.com/azure/postgresql/flexible-server/overview#azure-regions"
             }
           },
           {
-            "name": "skuRestricted",
+            "name": "dbRegionGate",
+            "type": "Microsoft.Common.TextBox",
+            "label": "Database region check",
+            "defaultValue": "Not available: choose another Database region above",
+            "toolTip": "This line only stops the wizard while Azure does not offer PostgreSQL to your subscription in the chosen database region. Choose another Database region above and it disappears.",
+            "constraints": {
+              "required": false,
+              "validations": [
+                {
+                  "isValid": "[not(and(contains(replace(string(steps('size').skuApi), ' ', ''), '\"value\":['), or(not(contains(replace(string(steps('size').skuApi), ' ', ''), '\"supportedServerVersions\":[{')), not(contains(replace(string(steps('size').skuApi), ' ', ''), '\"name\":\"17\"')), not(contains(replace(string(steps('size').skuApi), ' ', ''), concat('\"name\":\"', steps('size').dbSize.sku, '\"'))), or(contains(replace(string(steps('size').skuApi), ' ', ''), '\"restricted\":\"Enabled\"'), contains(replace(string(steps('size').skuApi), ' ', ''), '\"name\":\"OfferRestricted\",\"status\":\"Enabled\"'), contains(replace(string(steps('size').skuApi), ' ', ''), '\"status\":\"Enabled\",\"name\":\"OfferRestricted\"')))))]",
+                  "message": "[concat('Azure doesn’t offer PostgreSQL databases to your subscription in ', if(equals(steps('size').dbRegion, 'same'), location(), steps('size').dbRegion), '. Choose another database region (for example East US 2, Central US or West US 3) — the portal and API can stay where they are. ', if(or(contains(replace(string(steps('size').skuApi), ' ', ''), '\"restricted\":\"Enabled\"'), contains(replace(string(steps('size').skuApi), ' ', ''), '\"name\":\"OfferRestricted\",\"status\":\"Enabled\"'), contains(replace(string(steps('size').skuApi), ' ', ''), '\"status\":\"Enabled\",\"name\":\"OfferRestricted\"')), 'Azure reports this region as restricted for your subscription.', if(not(contains(replace(string(steps('size').skuApi), ' ', ''), '\"supportedServerVersions\":[{')), 'Azure lists no PostgreSQL versions there for your subscription, so the deployment would fail with ParameterOutOfRange.', if(not(contains(replace(string(steps('size').skuApi), ' ', ''), '\"name\":\"17\"')), 'Azure does not list PostgreSQL 17, the version GMSP installs, there for your subscription.', concat('Azure does not list the size you chose (', steps('size').dbSize.sku, ') there for your subscription.')))), ' Nothing is switched for you, and a bigger, more expensive size is not the fix.')]"
+                }
+              ]
+            },
+            "visible": "[and(contains(replace(string(steps('size').skuApi), ' ', ''), '\"value\":['), or(not(contains(replace(string(steps('size').skuApi), ' ', ''), '\"supportedServerVersions\":[{')), not(contains(replace(string(steps('size').skuApi), ' ', ''), '\"name\":\"17\"')), not(contains(replace(string(steps('size').skuApi), ' ', ''), concat('\"name\":\"', steps('size').dbSize.sku, '\"'))), or(contains(replace(string(steps('size').skuApi), ' ', ''), '\"restricted\":\"Enabled\"'), contains(replace(string(steps('size').skuApi), ' ', ''), '\"name\":\"OfferRestricted\",\"status\":\"Enabled\"'), contains(replace(string(steps('size').skuApi), ' ', ''), '\"status\":\"Enabled\",\"name\":\"OfferRestricted\"'))))]"
+          },
+          {
+            "name": "dbCheckUnknown",
             "type": "Microsoft.Common.InfoBox",
-            "visible": "[contains(string(steps('size').skuApi), '\"restricted\":\"Enabled\"')]",
+            "visible": "[not(contains(replace(string(steps('size').skuApi), ' ', ''), '\"value\":['))]",
             "options": {
-              "icon": "Error",
-              "text": "Azure restricts new database servers for this subscription in this region. Choose another Database region above, or upgrade the subscription to Pay-As-You-Go (restrictions are typical for trial and new subscriptions). If you need this region, Azure support can lift the restriction (Help + support > Service and subscription limits).",
-              "uri": "https://learn.microsoft.com/azure/postgresql/flexible-server/how-to-request-quota-increase"
+              "icon": "Warning",
+              "text": "[concat('Azure’s list of what PostgreSQL offers your subscription in ', if(equals(steps('size').dbRegion, 'same'), location(), steps('size').dbRegion), ' could not be read (yet), so the wizard cannot check the database region. You can go on. If the deployment then fails on the database with “The value of the Version should be in: []” or “location is restricted”, delete the resource group and run the button again with another Database region (East US 2, Central US or West US 3).')]",
+              "uri": "https://learn.microsoft.com/azure/postgresql/flexible-server/overview#azure-regions"
             }
           },
           {
             "name": "skuOk",
             "type": "Microsoft.Common.InfoBox",
-            "visible": "[and(contains(string(steps('size').skuApi), steps('size').dbSize.sku), not(contains(string(steps('size').skuApi), '\"restricted\":\"Enabled\"')))]",
+            "visible": "[and(contains(replace(string(steps('size').skuApi), ' ', ''), '\"value\":['), not(and(contains(replace(string(steps('size').skuApi), ' ', ''), '\"value\":['), or(not(contains(replace(string(steps('size').skuApi), ' ', ''), '\"supportedServerVersions\":[{')), not(contains(replace(string(steps('size').skuApi), ' ', ''), '\"name\":\"17\"')), not(contains(replace(string(steps('size').skuApi), ' ', ''), concat('\"name\":\"', steps('size').dbSize.sku, '\"'))), or(contains(replace(string(steps('size').skuApi), ' ', ''), '\"restricted\":\"Enabled\"'), contains(replace(string(steps('size').skuApi), ' ', ''), '\"name\":\"OfferRestricted\",\"status\":\"Enabled\"'), contains(replace(string(steps('size').skuApi), ' ', ''), '\"status\":\"Enabled\",\"name\":\"OfferRestricted\"'))))))]",
             "options": {
               "icon": "Info",
-              "text": "Azure lists this size as available in this database region for your subscription. (For brand-new and trial subscriptions Azure's list is not always the final word: if the deployment still fails with 'SKU not available', delete the resource group and try another database region, or upgrade the subscription. Never a bigger size.)"
+              "text": "Azure lists PostgreSQL 17 and the size you chose as available in this database region for your subscription. (For brand-new and trial subscriptions Azure's list is not always the final word: if the deployment still fails with 'SKU not available', delete the resource group and try another database region, or upgrade the subscription. Never a bigger size.)"
             }
           },
           {
@@ -451,7 +468,7 @@
             "type": "Microsoft.Common.TextBlock",
             "visible": true,
             "options": {
-              "text": "[concat('In the new resource group ', resourceGroup().name, ', tagged app=gmsp: the portal (Static Web App Standard, region ', steps('size').swaRegion, '); the API (Python 3.12 Function App on the Flex Consumption plan: pay per use, 2 GB instances, at most 10, none always ready; with its own managed identity, a storage account it reaches with that identity (no storage key), and Application Insights with a Log Analytics workspace, daily log cap); the database (PostgreSQL flexible server ', steps('size').dbSize.sku, ', 32 GB, PostgreSQL 16, reachable only from Azure services; the password is generated and never shown); and the GitHub deploy identity trusted only by ', steps('github').githubRepo, ' (main branch). First Owner: ', steps('owner').ownerEmail, '.')]"
+              "text": "[concat('In the new resource group ', resourceGroup().name, ', tagged app=gmsp: the portal (Static Web App Standard, region ', steps('size').swaRegion, '); the API (Python 3.12 Function App on the Flex Consumption plan: pay per use, 2 GB instances, at most 10, none always ready; with its own managed identity, a storage account it reaches with that identity (no storage key), and Application Insights with a Log Analytics workspace, daily log cap); the database (PostgreSQL flexible server ', steps('size').dbSize.sku, ', 32 GB, PostgreSQL 17, reachable only from Azure services; the password is generated and never shown); and the GitHub deploy identity trusted only by ', steps('github').githubRepo, ' (main branch). First Owner: ', steps('owner').ownerEmail, '.')]"
             }
           },
           {
@@ -483,7 +500,8 @@
       "staticWebAppLocation": "[steps('size').swaRegion]",
       "ownerEmail": "[steps('owner').ownerEmail]",
       "githubRepository": "[steps('github').githubRepo]",
-      "githubRoleScope": "[steps('github').roleScope]"
+      "githubRoleScope": "[steps('github').roleScope]",
+      "postgresVersion": "17"
     }
   }
 }

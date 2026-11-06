@@ -63,6 +63,10 @@ fast. GMSP's installers never do that:
 - the **command-line installer** warns on such a subscription and asks before creating anything, shows every size
   with its price, and if Azure refuses the size you chose, it asks which region to try, never a bigger size.
 
+Both also read Azure's PostgreSQL capabilities for the database region first. When Azure offers your subscription no
+PostgreSQL version, not the size you chose, or reports the region restricted, they stop and ask for another database
+region (the portal and API stay where they are). Another region costs about the same; a bigger size is never the fix.
+
 The fix is the subscription, not the size: use a **Pay-As-You-Go** subscription, or upgrade the trial (Azure portal >
 Subscriptions > your subscription > Upgrade; your credit and resources are kept). See Microsoft's
 [upgrade instructions](https://learn.microsoft.com/azure/cost-management-billing/manage/upgrade-azure-subscription).

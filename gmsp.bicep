@@ -59,11 +59,12 @@ param databaseLocation string = ''
 ])
 param dbStorageGb int = 32
 
-@description('PostgreSQL major version (the install wizard uses 16).')
+@description('PostgreSQL major version (both installers use 17, generally available on flexible server; the guided form and the command-line installer check that the database region offers it before anything is created).')
 @allowed([
   '16'
+  '17'
 ])
-param postgresVersion string = '16'
+param postgresVersion string = '17'
 
 @description('Region of the Static Web App resource (the portal itself is served worldwide).')
 @allowed([
