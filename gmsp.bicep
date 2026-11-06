@@ -5,8 +5,11 @@
 //
 //   gmspfn<suffix>                 storage account of the Function App
 //   gmsp-logs-<suffix>             Log Analytics workspace (in this resource group, never Azure's DefaultResourceGroup)
-//   gmsp-api-<suffix>              Application Insights (workspace-based) + Linux consumption plan + Function App
-//                                  (Python 3.12, system-assigned managed identity: the keyless bridge to Google)
+//   gmsp-api-<suffix>              Application Insights (workspace-based) + Flex Consumption plan (FC1) + Function App
+//                                  (Python 3.12, system-assigned managed identity: the keyless bridge to Google, and
+//                                  the identity the app reaches its own storage with: no storage key anywhere)
+//   gmsp-plan-<suffix>             the Flex Consumption plan (one app per plan; billed per execution, no always-ready
+//                                  instances)
 //   gmsp-portal-<suffix>           Static Web App (Standard) with the Function App linked as its backend; the link
 //                                  locks the Function App to portal traffic (App Service Authentication)
 //   gmsp-db-<suffix>               PostgreSQL flexible server (the size YOU chose; never a silent upgrade) + database
@@ -17,10 +20,17 @@
 // The database password and the secret-store key are generated here and written only into the Function App's app
 // settings: never shown, never an output. The code itself arrives through your fork's GitHub Actions workflow (outputs
 // list the repository variables it needs). Compile: `bicep build gmsp.bicep --outfile azuredeploy.json`.
+//
+// Hosting plan (v1.0.2): Flex Consumption, not the Linux Consumption plan (Y1 / Dynamic). New subscriptions get a Y1
+// quota of 0 ("SubscriptionIsOverQuotaForSku ... Y1 VMs") and Microsoft calls Consumption the legacy plan. Flex runs only
+// in some regions (the wizard checks the chosen one); the shape below follows Microsoft's Flex Consumption samples
+// (Azure-Samples/azure-functions-flex-consumption-samples, IaC/bicep) and its list of deprecated Flex settings: no
+// FUNCTIONS_WORKER_RUNTIME / FUNCTIONS_EXTENSION_VERSION / SCM_DO_BUILD_DURING_DEPLOYMENT / ENABLE_ORYX_BUILD /
+// WEBSITE_RUN_FROM_PACKAGE app settings and no linuxFxVersion / ftpsState: the runtime is functionAppConfig.runtime.
 
 targetScope = 'resourceGroup'
 
-@description('Region of the Function App, its storage and logs, and the deploy identity.')
+@description('Region of the Function App, its storage and logs, and the deploy identity. It must offer the Flex Consumption plan (az functionapp list-flexconsumption-locations); the Deploy to Azure wizard checks it.')
 param location string = resourceGroup().location
 
 @description('Short name suffix, lowercase letters and digits; the default is derived from the resource group, so names are unique and stable.')
@@ -107,6 +117,13 @@ var dbName = 'gmsp-db-${suffix}'
 var storageName = 'gmspfn${suffix}' // storage names: 3-24 lowercase letters and digits
 var logsName = 'gmsp-logs-${suffix}'
 var planName = 'gmsp-plan-${suffix}'
+// Flex Consumption keeps the deployed package in a blob container of the app's own storage account.
+var deploymentContainerName = 'app-package-${funcName}'
+// Flex scale: 2048 MB is Microsoft's recommended default instance size (512 MB is too small for GMSP's Python API with
+// the Google client libraries); a low ceiling of on-demand instances bounds the bill, and there are NO always-ready
+// instances (those are billed around the clock).
+var instanceMemoryMB = 2048
+var maximumInstanceCount = 10
 var deployIdentityName = 'gmsp-github-deploy-${suffix}'
 var dbLocation = empty(databaseLocation) ? location : databaseLocation
 var dbTier = startsWith(dbSkuName, 'Standard_B') ? 'Burstable' : 'GeneralPurpose'
@@ -115,6 +132,14 @@ var githubSubject = 'repo:${githubRepository}:ref:refs/heads/main'
 var federatedCredentialName = take(replace(replace(replace('github-${githubRepository}-main', '/', '-'), '.', '-'), '_', '-'), 120)
 var websiteContributor = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'de139f84-1756-47ae-9be6-808fbbe84772')
 var contributor = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'b24988ac-6180-42a0-ab88-20f7382dd24c')
+// The Function App's own identity on its storage account, as Microsoft documents for identity-based host storage
+// (AzureWebJobsStorage__*) and the Flex deployment container: blob (owner: the host takes blob leases, e.g. for the
+// timer's singleton lock, and the deployment package), queue and table.
+var storageRoles = {
+  blobDataOwner: 'b7e6dc6d-f1e8-4753-8033-0f276bb0955b'
+  queueDataContributor: '974c5e8b-45b9-4653-ba55-5f855dd0fb88'
+  tableDataContributor: '0a9a7e1f-b9d0-4cc4-a60d-0319b160aaa3'
+}
 
 resource storage 'Microsoft.Storage/storageAccounts@2023-05-01' = {
   name: storageName
@@ -126,8 +151,22 @@ resource storage 'Microsoft.Storage/storageAccounts@2023-05-01' = {
   kind: 'StorageV2'
   properties: {
     allowBlobPublicAccess: false
+    allowSharedKeyAccess: false // the app reaches its storage with its managed identity only
     minimumTlsVersion: 'TLS1_2'
     supportsHttpsTrafficOnly: true
+  }
+}
+
+resource blobService 'Microsoft.Storage/storageAccounts/blobServices@2023-05-01' = {
+  parent: storage
+  name: 'default'
+}
+
+resource deploymentContainer 'Microsoft.Storage/storageAccounts/blobServices/containers@2023-05-01' = {
+  parent: blobService
+  name: deploymentContainerName
+  properties: {
+    publicAccess: 'None'
   }
 }
 
@@ -165,11 +204,11 @@ resource plan 'Microsoft.Web/serverfarms@2024-04-01' = {
   tags: tags
   kind: 'functionapp'
   sku: {
-    name: 'Y1'
-    tier: 'Dynamic'
+    name: 'FC1'
+    tier: 'FlexConsumption'
   }
   properties: {
-    reserved: true // Linux
+    reserved: true // Linux (Flex Consumption is Linux only)
   }
 }
 
@@ -184,22 +223,35 @@ resource funcApp 'Microsoft.Web/sites@2024-04-01' = {
   properties: {
     serverFarmId: plan.id
     httpsOnly: true
+    functionAppConfig: {
+      deployment: {
+        storage: {
+          type: 'blobContainer'
+          value: '${storage.properties.primaryEndpoints.blob}${deploymentContainerName}'
+          authentication: {
+            type: 'SystemAssignedIdentity'
+          }
+        }
+      }
+      scaleAndConcurrency: {
+        instanceMemoryMB: instanceMemoryMB
+        maximumInstanceCount: maximumInstanceCount
+      }
+      runtime: {
+        name: 'python'
+        version: '3.12'
+      }
+    }
     siteConfig: {
-      linuxFxVersion: 'PYTHON|3.12'
-      ftpsState: 'Disabled'
       minTlsVersion: '1.2'
       appSettings: [
         {
-          name: 'AzureWebJobsStorage'
-          value: 'DefaultEndpointsProtocol=https;AccountName=${storage.name};AccountKey=${storage.listKeys().keys[0].value};EndpointSuffix=${environment().suffixes.storage}'
+          name: 'AzureWebJobsStorage__accountName'
+          value: storage.name
         }
         {
-          name: 'FUNCTIONS_EXTENSION_VERSION'
-          value: '~4'
-        }
-        {
-          name: 'FUNCTIONS_WORKER_RUNTIME'
-          value: 'python'
+          name: 'AzureWebJobsStorage__credential'
+          value: 'managedidentity'
         }
         {
           name: 'APPLICATIONINSIGHTS_CONNECTION_STRING'
@@ -221,27 +273,24 @@ resource funcApp 'Microsoft.Web/sites@2024-04-01' = {
           name: 'GMSP_BOOTSTRAP_OWNER'
           value: toLower(trim(ownerEmail))
         }
-        {
-          name: 'SCM_DO_BUILD_DURING_DEPLOYMENT'
-          value: 'true'
-        }
-        {
-          name: 'ENABLE_ORYX_BUILD'
-          value: 'true'
-        }
       ]
     }
   }
+  dependsOn: [
+    deploymentContainer
+  ]
 }
 
-// Nobody deploys GMSP over FTP; the GitHub workflow uses the Azure API with its own identity.
-resource ftpOff 'Microsoft.Web/sites/basicPublishingCredentialsPolicies@2024-04-01' = {
-  parent: funcApp
-  name: 'ftp'
+// The app's identity on its own storage account (host storage + the deployment container). No storage key is used.
+resource funcStorageRoles 'Microsoft.Authorization/roleAssignments@2022-04-01' = [for role in items(storageRoles): {
+  scope: storage
+  name: guid(storage.id, funcApp.id, role.value)
   properties: {
-    allow: false
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', role.value)
+    principalId: funcApp.identity.principalId
+    principalType: 'ServicePrincipal'
   }
-}
+}]
 
 resource portal 'Microsoft.Web/staticSites@2024-04-01' = {
   name: swaName
@@ -397,6 +446,7 @@ output ownerEmail string = toLower(trim(ownerEmail))
 @description('Names of what was created.')
 output resources object = {
   functionApp: funcApp.name
+  functionPlan: '${plan.name} (Flex Consumption, ${instanceMemoryMB} MB instances, at most ${maximumInstanceCount}, none always ready)'
   staticWebApp: portal.name
   database: postgres.name
   databaseSku: '${dbSkuName} (${dbTier})'

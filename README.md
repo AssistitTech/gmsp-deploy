@@ -7,7 +7,7 @@ This repository holds **only** the files behind GMSP's "Deploy to Azure" button:
 (`createUiDefinition.json`) and the cost guide (`COSTS.md`). There is no GMSP code here: GMSP itself is distributed
 privately, and your fork of it deploys the code after the button has created the Azure resources.
 
-Templates for GMSP v1.0.1.
+Templates for GMSP v1.0.2.
 
 Before you click, read `INSTALL.md` in your copy of GMSP ("Stage 1, option A"). In short: use a Pay-As-You-Go
 subscription in which you are Owner, have your fork's name ready, and expect about $25-35 a month with the

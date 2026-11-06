@@ -5,7 +5,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.48.1.52935",
-      "templateHash": "6347862532494949854"
+      "templateHash": "4202322662290112580"
     }
   },
   "parameters": {
@@ -13,7 +13,7 @@
       "type": "string",
       "defaultValue": "[resourceGroup().location]",
       "metadata": {
-        "description": "Region of the Function App, its storage and logs, and the deploy identity."
+        "description": "Region of the Function App, its storage and logs, and the deploy identity. It must offer the Flex Consumption plan (az functionapp list-flexconsumption-locations); the Deploy to Azure wizard checks it."
       }
     },
     "suffix": {
@@ -146,6 +146,9 @@
     "storageName": "[format('gmspfn{0}', parameters('suffix'))]",
     "logsName": "[format('gmsp-logs-{0}', parameters('suffix'))]",
     "planName": "[format('gmsp-plan-{0}', parameters('suffix'))]",
+    "deploymentContainerName": "[format('app-package-{0}', variables('funcName'))]",
+    "instanceMemoryMB": 2048,
+    "maximumInstanceCount": 10,
     "deployIdentityName": "[format('gmsp-github-deploy-{0}', parameters('suffix'))]",
     "dbLocation": "[if(empty(parameters('databaseLocation')), parameters('location'), parameters('databaseLocation'))]",
     "dbTier": "[if(startsWith(parameters('dbSkuName'), 'Standard_B'), 'Burstable', 'GeneralPurpose')]",
@@ -153,7 +156,12 @@
     "githubSubject": "[format('repo:{0}:ref:refs/heads/main', parameters('githubRepository'))]",
     "federatedCredentialName": "[take(replace(replace(replace(format('github-{0}-main', parameters('githubRepository')), '/', '-'), '.', '-'), '_', '-'), 120)]",
     "websiteContributor": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'de139f84-1756-47ae-9be6-808fbbe84772')]",
-    "contributor": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'b24988ac-6180-42a0-ab88-20f7382dd24c')]"
+    "contributor": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'b24988ac-6180-42a0-ab88-20f7382dd24c')]",
+    "storageRoles": {
+      "blobDataOwner": "b7e6dc6d-f1e8-4753-8033-0f276bb0955b",
+      "queueDataContributor": "974c5e8b-45b9-4653-ba55-5f855dd0fb88",
+      "tableDataContributor": "0a9a7e1f-b9d0-4cc4-a60d-0319b160aaa3"
+    }
   },
   "resources": [
     {
@@ -168,9 +176,29 @@
       "kind": "StorageV2",
       "properties": {
         "allowBlobPublicAccess": false,
+        "allowSharedKeyAccess": false,
         "minimumTlsVersion": "TLS1_2",
         "supportsHttpsTrafficOnly": true
       }
+    },
+    {
+      "type": "Microsoft.Storage/storageAccounts/blobServices",
+      "apiVersion": "2023-05-01",
+      "name": "[format('{0}/{1}', variables('storageName'), 'default')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('storageName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Storage/storageAccounts/blobServices/containers",
+      "apiVersion": "2023-05-01",
+      "name": "[format('{0}/{1}/{2}', variables('storageName'), 'default', variables('deploymentContainerName'))]",
+      "properties": {
+        "publicAccess": "None"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts/blobServices', variables('storageName'), 'default')]"
+      ]
     },
     {
       "type": "Microsoft.OperationalInsights/workspaces",
@@ -211,8 +239,8 @@
       "tags": "[variables('tags')]",
       "kind": "functionapp",
       "sku": {
-        "name": "Y1",
-        "tier": "Dynamic"
+        "name": "FC1",
+        "tier": "FlexConsumption"
       },
       "properties": {
         "reserved": true
@@ -231,22 +259,35 @@
       "properties": {
         "serverFarmId": "[resourceId('Microsoft.Web/serverfarms', variables('planName'))]",
         "httpsOnly": true,
+        "functionAppConfig": {
+          "deployment": {
+            "storage": {
+              "type": "blobContainer",
+              "value": "[format('{0}{1}', reference(resourceId('Microsoft.Storage/storageAccounts', variables('storageName')), '2023-05-01').primaryEndpoints.blob, variables('deploymentContainerName'))]",
+              "authentication": {
+                "type": "SystemAssignedIdentity"
+              }
+            }
+          },
+          "scaleAndConcurrency": {
+            "instanceMemoryMB": "[variables('instanceMemoryMB')]",
+            "maximumInstanceCount": "[variables('maximumInstanceCount')]"
+          },
+          "runtime": {
+            "name": "python",
+            "version": "3.12"
+          }
+        },
         "siteConfig": {
-          "linuxFxVersion": "PYTHON|3.12",
-          "ftpsState": "Disabled",
           "minTlsVersion": "1.2",
           "appSettings": [
             {
-              "name": "AzureWebJobsStorage",
-              "value": "[format('DefaultEndpointsProtocol=https;AccountName={0};AccountKey={1};EndpointSuffix={2}', variables('storageName'), listKeys(resourceId('Microsoft.Storage/storageAccounts', variables('storageName')), '2023-05-01').keys[0].value, environment().suffixes.storage)]"
+              "name": "AzureWebJobsStorage__accountName",
+              "value": "[variables('storageName')]"
             },
             {
-              "name": "FUNCTIONS_EXTENSION_VERSION",
-              "value": "~4"
-            },
-            {
-              "name": "FUNCTIONS_WORKER_RUNTIME",
-              "value": "python"
+              "name": "AzureWebJobsStorage__credential",
+              "value": "managedidentity"
             },
             {
               "name": "APPLICATIONINSIGHTS_CONNECTION_STRING",
@@ -267,19 +308,12 @@
             {
               "name": "GMSP_BOOTSTRAP_OWNER",
               "value": "[toLower(trim(parameters('ownerEmail')))]"
-            },
-            {
-              "name": "SCM_DO_BUILD_DURING_DEPLOYMENT",
-              "value": "true"
-            },
-            {
-              "name": "ENABLE_ORYX_BUILD",
-              "value": "true"
             }
           ]
         }
       },
       "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts/blobServices/containers', variables('storageName'), 'default', variables('deploymentContainerName'))]",
         "[resourceId('Microsoft.Insights/components', variables('funcName'))]",
         "[resourceId('Microsoft.Web/serverfarms', variables('planName'))]",
         "[resourceId('Microsoft.DBforPostgreSQL/flexibleServers', variables('dbName'))]",
@@ -287,14 +321,22 @@
       ]
     },
     {
-      "type": "Microsoft.Web/sites/basicPublishingCredentialsPolicies",
-      "apiVersion": "2024-04-01",
-      "name": "[format('{0}/{1}', variables('funcName'), 'ftp')]",
+      "copy": {
+        "name": "funcStorageRoles",
+        "count": "[length(items(variables('storageRoles')))]"
+      },
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "scope": "[resourceId('Microsoft.Storage/storageAccounts', variables('storageName'))]",
+      "name": "[guid(resourceId('Microsoft.Storage/storageAccounts', variables('storageName')), resourceId('Microsoft.Web/sites', variables('funcName')), items(variables('storageRoles'))[copyIndex()].value)]",
       "properties": {
-        "allow": false
+        "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', items(variables('storageRoles'))[copyIndex()].value)]",
+        "principalId": "[reference(resourceId('Microsoft.Web/sites', variables('funcName')), '2024-04-01', 'full').identity.principalId]",
+        "principalType": "ServicePrincipal"
       },
       "dependsOn": [
-        "[resourceId('Microsoft.Web/sites', variables('funcName'))]"
+        "[resourceId('Microsoft.Web/sites', variables('funcName'))]",
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('storageName'))]"
       ]
     },
     {
@@ -512,6 +554,7 @@
       },
       "value": {
         "functionApp": "[variables('funcName')]",
+        "functionPlan": "[format('{0} (Flex Consumption, {1} MB instances, at most {2}, none always ready)', variables('planName'), variables('instanceMemoryMB'), variables('maximumInstanceCount'))]",
         "staticWebApp": "[variables('swaName')]",
         "database": "[variables('dbName')]",
         "databaseSku": "[format('{0} ({1})', parameters('dbSkuName'), variables('dbTier'))]",
