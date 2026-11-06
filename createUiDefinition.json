@@ -1,0 +1,453 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/0.1.2-preview/CreateUIDefinition.MultiVm.json#",
+  "handler": "Microsoft.Azure.CreateUIDef",
+  "version": "0.1.2-preview",
+  "parameters": {
+    "config": {
+      "isWizard": true,
+      "basics": {
+        "description": "**Install GMSP, the Google Workspace management portal, into your own Azure subscription.** This wizard creates the portal, its API, a small database and a deploy identity for your GitHub fork, in one NEW resource group. It shows the monthly cost before anything is created, and it never picks a bigger (more expensive) size on its own. The deployment takes about 10-15 minutes; afterwards four short steps in your GitHub fork put the code in place.",
+        "subscription": {
+          "constraints": {
+            "validations": [
+              {
+                "isValid": "[not(or(contains(string(basics('subscriptionApi')), 'FreeTrial_'), contains(string(basics('subscriptionApi')), 'LightweightTrial_'), contains(string(basics('subscriptionApi')), 'AzureForStudents'), contains(string(basics('subscriptionApi')), 'Sponsored_'), contains(string(basics('subscriptionApi')), 'AzurePass_'), contains(string(basics('subscriptionApi')), 'DreamSpark_')))]",
+                "message": "This is a free trial, student, sponsorship or Azure Pass subscription. These usually refuse the small database GMSP needs, so the deployment would fail or only work with a size that costs about 10 times more. Choose a Pay-As-You-Go subscription, or upgrade this one first (see the red box below)."
+              },
+              {
+                "permission": "Microsoft.Authorization/roleAssignments/write",
+                "message": "You need Owner (or User Access Administrator) on this subscription: the installation gives its GitHub deploy identity two narrow roles. Ask your Azure administrator, or choose a subscription you own."
+              }
+            ]
+          },
+          "resourceProviders": [
+            "Microsoft.Web",
+            "Microsoft.Storage",
+            "Microsoft.DBforPostgreSQL",
+            "Microsoft.Insights",
+            "Microsoft.OperationalInsights",
+            "Microsoft.ManagedIdentity"
+          ]
+        },
+        "resourceGroup": {
+          "allowExisting": false
+        },
+        "location": {
+          "label": "Region",
+          "toolTip": "Where the API, its storage and logs live. Pick a region close to you. The database region can be changed on the next page.",
+          "resourceTypes": [
+            "Microsoft.Web/sites",
+            "Microsoft.DBforPostgreSQL/flexibleServers"
+          ]
+        }
+      }
+    },
+    "basics": [
+      {
+        "name": "subscriptionApi",
+        "type": "Microsoft.Solutions.ArmApiControl",
+        "request": {
+          "method": "GET",
+          "path": "[concat(subscription().id, '?api-version=2022-12-01')]"
+        }
+      },
+      {
+        "name": "subscriptionWarning",
+        "type": "Microsoft.Common.InfoBox",
+        "visible": true,
+        "options": {
+          "icon": "Warning",
+          "text": "Choose a Pay-As-You-Go subscription. Free trial, student and sponsorship subscriptions often refuse the small, cheap database size (Burstable B1ms, about $13-15 a month); some tools then quietly switch to a General Purpose size of about $125-145 a month. GMSP never does that: if your subscription refuses the small size, the deployment stops and tells you. Upgrading a free trial keeps everything in it and takes a minute: Azure portal > Subscriptions > your subscription > Upgrade. Click this box for Microsoft's instructions.",
+          "uri": "https://learn.microsoft.com/azure/cost-management-billing/manage/upgrade-azure-subscription"
+        }
+      },
+      {
+        "name": "subscriptionBlocked",
+        "type": "Microsoft.Common.InfoBox",
+        "visible": "[or(contains(string(basics('subscriptionApi')), 'FreeTrial_'), contains(string(basics('subscriptionApi')), 'LightweightTrial_'), contains(string(basics('subscriptionApi')), 'AzureForStudents'), contains(string(basics('subscriptionApi')), 'Sponsored_'), contains(string(basics('subscriptionApi')), 'AzurePass_'), contains(string(basics('subscriptionApi')), 'DreamSpark_'))]",
+        "options": {
+          "icon": "Error",
+          "text": "You don't have a suitable subscription selected: this one is a free trial, student, sponsorship or Azure Pass offer. With it, only the expensive database size usually works (about $125-145 a month instead of about $13-15). Select a Pay-As-You-Go subscription above, or upgrade this one to Pay-As-You-Go first (Azure portal > Subscriptions > Upgrade; your credit and resources are kept) and then start again. Click this box for how to upgrade.",
+          "uri": "https://learn.microsoft.com/azure/cost-management-billing/manage/upgrade-azure-subscription"
+        }
+      },
+      {
+        "name": "subscriptionDevTest",
+        "type": "Microsoft.Common.InfoBox",
+        "visible": "[or(contains(string(basics('subscriptionApi')), 'MSDN_'), contains(string(basics('subscriptionApi')), 'MSDNDevTest_'), contains(string(basics('subscriptionApi')), '\"spendingLimit\":\"On\"'))]",
+        "options": {
+          "icon": "Warning",
+          "text": "This subscription has a spending limit or is a Visual Studio (dev/test) subscription. GMSP can run on it, but when the monthly credit runs out Azure STOPS everything in it, including your portal. For production use a Pay-As-You-Go subscription, or remove the spending limit.",
+          "uri": "https://learn.microsoft.com/azure/cost-management-billing/manage/spending-limit"
+        }
+      },
+      {
+        "name": "newGroupInfo",
+        "type": "Microsoft.Common.InfoBox",
+        "visible": true,
+        "options": {
+          "icon": "Info",
+          "text": "Create a NEW resource group (for example gmsp). Everything GMSP uses goes into it, so removing GMSP later is one click: delete the resource group. This button is for a fresh installation only: to update GMSP later you click Sync fork in GitHub, you never run this again."
+        }
+      }
+    ],
+    "steps": [
+      {
+        "name": "size",
+        "label": "Size and cost",
+        "subLabel": {
+          "preValidation": "Database size, regions, monthly cost",
+          "postValidation": "Done"
+        },
+        "bladeTitle": "Size and cost",
+        "elements": [
+          {
+            "name": "sizeIntro",
+            "type": "Microsoft.Common.TextBlock",
+            "visible": true,
+            "options": {
+              "text": "Almost all of GMSP's cost is the database. One MSP managing dozens of client tenants runs well on the smallest size. You can make it bigger later in the Azure portal (Database > Compute + storage) without reinstalling. Prices are approximate Azure list prices in USD (Pay-As-You-Go, East US); your region and currency may differ slightly."
+            }
+          },
+          {
+            "name": "dbSize",
+            "type": "Microsoft.Common.DropDown",
+            "label": "Database size",
+            "defaultValue": "Burstable B1ms - about $13-15 a month (Recommended for one MSP)",
+            "toolTip": "The PostgreSQL server size. Burstable sizes are cheap and fit GMSP's load: busy for a moment, idle most of the time.",
+            "filter": false,
+            "constraints": {
+              "required": true,
+              "allowedValues": [
+                {
+                  "label": "Burstable B1ms - about $13-15 a month (Recommended for one MSP)",
+                  "description": "1 vCore, 2 GB memory. Plenty for one MSP and dozens of tenants.",
+                  "value": { "sku": "Standard_B1ms", "low": 13, "high": 15 }
+                },
+                {
+                  "label": "Burstable B2s - about $25-30 a month",
+                  "description": "2 vCores, 4 GB memory. Only if B1ms is measurably too slow.",
+                  "value": { "sku": "Standard_B2s", "low": 25, "high": 30 }
+                },
+                {
+                  "label": "Burstable B2ms - about $50-55 a month",
+                  "description": "2 vCores, 8 GB memory. Large fleets with heavy reporting.",
+                  "value": { "sku": "Standard_B2ms", "low": 50, "high": 55 }
+                },
+                {
+                  "label": "General Purpose D2s v3 - about $125-145 a month (EXPENSIVE, not needed for GMSP)",
+                  "description": "Ten times the recommended size. Choose it only if you know you need it.",
+                  "value": { "sku": "Standard_D2s_v3", "low": 125, "high": 145 }
+                },
+                {
+                  "label": "General Purpose D2ds v4 - about $125-145 a month (EXPENSIVE, not needed for GMSP)",
+                  "description": "Ten times the recommended size. Choose it only if you know you need it.",
+                  "value": { "sku": "Standard_D2ds_v4", "low": 125, "high": 145 }
+                }
+              ]
+            },
+            "visible": true
+          },
+          {
+            "name": "sizeBigger",
+            "type": "Microsoft.Common.InfoBox",
+            "visible": "[or(equals(steps('size').dbSize.sku, 'Standard_B2s'), equals(steps('size').dbSize.sku, 'Standard_B2ms'))]",
+            "options": {
+              "icon": "Warning",
+              "text": "This size costs two to four times the recommended Burstable B1ms. GMSP for one MSP runs fine on B1ms, and you can grow the database later without reinstalling. Keep this size only if you have a reason."
+            }
+          },
+          {
+            "name": "sizeExpensive",
+            "type": "Microsoft.Common.InfoBox",
+            "visible": "[startsWith(steps('size').dbSize.sku, 'Standard_D')]",
+            "options": {
+              "icon": "Error",
+              "text": "EXPENSIVE: General Purpose costs about $125-145 a month, roughly ten times the recommended Burstable B1ms (about $13-15). GMSP does not need it. If you chose it because your subscription refuses the small size, the subscription is the problem: use or upgrade to a Pay-As-You-Go subscription instead (Basics page)."
+            }
+          },
+          {
+            "name": "dbRegion",
+            "type": "Microsoft.Common.DropDown",
+            "label": "Database region",
+            "defaultValue": "Same region as on the Basics page (recommended)",
+            "toolTip": "Keep the database next to the API. Change it only if Azure says the size is not offered in that region for your subscription.",
+            "filter": true,
+            "constraints": {
+              "required": true,
+              "allowedValues": [
+                { "label": "Same region as on the Basics page (recommended)", "value": "same" },
+                { "label": "East US", "value": "eastus" },
+                { "label": "East US 2", "value": "eastus2" },
+                { "label": "Central US", "value": "centralus" },
+                { "label": "South Central US", "value": "southcentralus" },
+                { "label": "North Central US", "value": "northcentralus" },
+                { "label": "West US", "value": "westus" },
+                { "label": "West US 2", "value": "westus2" },
+                { "label": "West US 3", "value": "westus3" },
+                { "label": "Canada Central", "value": "canadacentral" },
+                { "label": "Brazil South", "value": "brazilsouth" },
+                { "label": "North Europe", "value": "northeurope" },
+                { "label": "West Europe", "value": "westeurope" },
+                { "label": "UK South", "value": "uksouth" },
+                { "label": "France Central", "value": "francecentral" },
+                { "label": "Germany West Central", "value": "germanywestcentral" },
+                { "label": "Switzerland North", "value": "switzerlandnorth" },
+                { "label": "Sweden Central", "value": "swedencentral" },
+                { "label": "Norway East", "value": "norwayeast" },
+                { "label": "Israel Central", "value": "israelcentral" },
+                { "label": "UAE North", "value": "uaenorth" },
+                { "label": "South Africa North", "value": "southafricanorth" },
+                { "label": "Central India", "value": "centralindia" },
+                { "label": "Southeast Asia", "value": "southeastasia" },
+                { "label": "Japan East", "value": "japaneast" },
+                { "label": "Korea Central", "value": "koreacentral" },
+                { "label": "Australia East", "value": "australiaeast" }
+              ]
+            },
+            "visible": true
+          },
+          {
+            "name": "skuApi",
+            "type": "Microsoft.Solutions.ArmApiControl",
+            "request": {
+              "method": "GET",
+              "path": "[concat(subscription().id, '/providers/Microsoft.DBforPostgreSQL/locations/', if(equals(steps('size').dbRegion, 'same'), location(), steps('size').dbRegion), '/capabilities?api-version=2024-08-01')]"
+            }
+          },
+          {
+            "name": "skuMissing",
+            "type": "Microsoft.Common.InfoBox",
+            "visible": "[and(contains(string(steps('size').skuApi), 'supportedServerEditions'), not(contains(string(steps('size').skuApi), steps('size').dbSize.sku)))]",
+            "options": {
+              "icon": "Error",
+              "text": "Azure says the size you chose is NOT offered to this subscription in this database region. Choose another Database region above (East US 2, Central US and West US 3 often work), or upgrade the subscription to Pay-As-You-Go. Do not pick a bigger size just to get past this: it costs many times more. Nothing is switched for you.",
+              "uri": "https://learn.microsoft.com/azure/postgresql/flexible-server/overview#azure-regions"
+            }
+          },
+          {
+            "name": "skuRestricted",
+            "type": "Microsoft.Common.InfoBox",
+            "visible": "[contains(string(steps('size').skuApi), '\"restricted\":\"Enabled\"')]",
+            "options": {
+              "icon": "Error",
+              "text": "Azure restricts new database servers for this subscription in this region. Choose another Database region above, or upgrade the subscription to Pay-As-You-Go (restrictions are typical for trial and new subscriptions). If you need this region, Azure support can lift the restriction (Help + support > Service and subscription limits).",
+              "uri": "https://learn.microsoft.com/azure/postgresql/flexible-server/how-to-request-quota-increase"
+            }
+          },
+          {
+            "name": "skuOk",
+            "type": "Microsoft.Common.InfoBox",
+            "visible": "[and(contains(string(steps('size').skuApi), steps('size').dbSize.sku), not(contains(string(steps('size').skuApi), '\"restricted\":\"Enabled\"')))]",
+            "options": {
+              "icon": "Info",
+              "text": "Azure lists this size as available in this database region for your subscription. (For brand-new and trial subscriptions Azure's list is not always the final word: if the deployment still fails with 'SKU not available', delete the resource group and try another database region, or upgrade the subscription. Never a bigger size.)"
+            }
+          },
+          {
+            "name": "swaRegion",
+            "type": "Microsoft.Common.DropDown",
+            "label": "Portal region",
+            "defaultValue": "East US 2",
+            "toolTip": "Where the portal's (Static Web App's) settings live. The portal itself is served worldwide from Azure's edge, so this choice does not affect speed. Only these five regions offer Static Web Apps.",
+            "filter": false,
+            "constraints": {
+              "required": true,
+              "allowedValues": [
+                { "label": "East US 2", "value": "eastus2" },
+                { "label": "Central US", "value": "centralus" },
+                { "label": "West US 2", "value": "westus2" },
+                { "label": "West Europe", "value": "westeurope" },
+                { "label": "East Asia", "value": "eastasia" }
+              ]
+            },
+            "visible": true
+          },
+          {
+            "name": "costTotal",
+            "type": "Microsoft.Common.InfoBox",
+            "visible": true,
+            "options": {
+              "icon": "Info",
+              "text": "[concat('Estimated total: about $', string(add(steps('size').dbSize.low, 13)), '-', string(add(steps('size').dbSize.high, 18)), ' a month. That is the database you chose ($', string(steps('size').dbSize.low), '-', string(steps('size').dbSize.high), ') + database storage 32 GB (about $4) + portal, Static Web App Standard ($9) + API, Functions consumption (about $0-2) + storage (under $1) + logs, capped daily (about $0-2). Sign-in (Microsoft Entra ID Free) costs nothing. Click for the full cost guide.')]",
+              "uri": "https://github.com/AssistitTech/gmsp-deploy/blob/main/COSTS.md"
+            }
+          },
+          {
+            "name": "costCalculator",
+            "type": "Microsoft.Common.TextBlock",
+            "visible": true,
+            "options": {
+              "text": "Want exact figures for your region and currency?",
+              "link": {
+                "label": "Open the Azure pricing calculator",
+                "uri": "https://azure.microsoft.com/pricing/calculator/"
+              }
+            }
+          }
+        ]
+      },
+      {
+        "name": "owner",
+        "label": "First Owner",
+        "subLabel": {
+          "preValidation": "Who owns GMSP",
+          "postValidation": "Done"
+        },
+        "bladeTitle": "First Owner",
+        "elements": [
+          {
+            "name": "ownerIntro",
+            "type": "Microsoft.Common.TextBlock",
+            "visible": true,
+            "options": {
+              "text": "The Owner can do everything in GMSP, including inviting your staff. Enter the email address of the Microsoft work account (Microsoft Entra ID) that will sign in to the portal first, usually your own."
+            }
+          },
+          {
+            "name": "ownerEmail",
+            "type": "Microsoft.Common.TextBox",
+            "label": "Owner email address",
+            "placeholder": "you@your-company.com",
+            "toolTip": "The first sign-in to the portal with exactly this address becomes Owner. It works once.",
+            "constraints": {
+              "required": true,
+              "validations": [
+                {
+                  "regex": "^[A-Za-z0-9._%+'-]+@[A-Za-z0-9-]+(\\.[A-Za-z0-9-]+)*\\.[A-Za-z]{2,}$",
+                  "message": "Enter one email address, for example you@your-company.com."
+                }
+              ]
+            },
+            "visible": true
+          },
+          {
+            "name": "ownerHow",
+            "type": "Microsoft.Common.InfoBox",
+            "visible": true,
+            "options": {
+              "icon": "Info",
+              "text": "How it works: Azure cannot send the usual sign-in invitation from a template, so GMSP remembers this address. The first time someone signs in with exactly this address, GMSP makes that account the Owner, records it in the audit log, and locks the Owner to that one account. After that the setting is ignored. Sign in soon after the installation finishes (the Outputs tell you when)."
+            }
+          },
+          {
+            "name": "ownerHarden",
+            "type": "Microsoft.Common.InfoBox",
+            "visible": true,
+            "options": {
+              "icon": "Warning",
+              "text": "Recommended afterwards: limit sign-in to your own company's Microsoft Entra tenant, and invite yourself in the portal's Role management, so the one-time bootstrap is no longer the way in. GMSP's Setup guide and the hardening guide (docs/security/08-hardening-guide.md) walk you through it."
+            }
+          }
+        ]
+      },
+      {
+        "name": "github",
+        "label": "GitHub fork",
+        "subLabel": {
+          "preValidation": "Where updates come from",
+          "postValidation": "Done"
+        },
+        "bladeTitle": "GitHub fork",
+        "elements": [
+          {
+            "name": "githubIntro",
+            "type": "Microsoft.Common.TextBlock",
+            "visible": true,
+            "options": {
+              "text": "GMSP's code reaches your Azure from YOUR fork of the GMSP distribution repository on GitHub. A workflow in the fork builds and deploys it, now and after every update (Sync fork). It signs in to Azure without any password or key: Azure trusts only your fork's main branch. Fork the distribution repository first if you have not yet (github.com > the repository > Fork)."
+            }
+          },
+          {
+            "name": "githubRepo",
+            "type": "Microsoft.Common.TextBox",
+            "label": "Your fork (owner/name)",
+            "placeholder": "your-company/gmsp-dist",
+            "toolTip": "The account or organisation that owns your fork, a slash, and the fork's name, exactly as in its address github.com/<owner>/<name>.",
+            "constraints": {
+              "required": true,
+              "validations": [
+                {
+                  "regex": "^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})/[A-Za-z0-9._-]{1,100}$",
+                  "message": "Type owner/name, for example your-company/gmsp-dist (no https://github.com/ and no .git)."
+                }
+              ]
+            },
+            "visible": true
+          },
+          {
+            "name": "roleScope",
+            "type": "Microsoft.Common.OptionsGroup",
+            "label": "What the fork's deploy identity may change",
+            "defaultValue": "Only the portal and the API (recommended)",
+            "toolTip": "The least it needs: Website Contributor on the API and Contributor on the portal. The wider option gives it Contributor on the whole resource group, including the database server.",
+            "constraints": {
+              "allowedValues": [
+                { "label": "Only the portal and the API (recommended)", "value": "narrow" },
+                { "label": "The whole resource group (simpler, wider)", "value": "resource-group" }
+              ],
+              "required": true
+            },
+            "visible": true
+          },
+          {
+            "name": "githubProtect",
+            "type": "Microsoft.Common.InfoBox",
+            "visible": true,
+            "options": {
+              "icon": "Warning",
+              "text": "Whoever can push to your fork's main branch can deploy code that runs as GMSP. Keep the fork private and protect main (fork > Settings > Branches)."
+            }
+          }
+        ]
+      },
+      {
+        "name": "summary",
+        "label": "Summary",
+        "subLabel": {
+          "preValidation": "What will be created",
+          "postValidation": "Done"
+        },
+        "bladeTitle": "What will be created",
+        "elements": [
+          {
+            "name": "summaryList",
+            "type": "Microsoft.Common.TextBlock",
+            "visible": true,
+            "options": {
+              "text": "[concat('In the new resource group ', resourceGroup().name, ', tagged app=gmsp: the portal (Static Web App Standard, region ', steps('size').swaRegion, '); the API (Python Function App on the consumption plan, with its own managed identity, storage account and Application Insights with a Log Analytics workspace, daily log cap); the database (PostgreSQL flexible server ', steps('size').dbSize.sku, ', 32 GB, PostgreSQL 16, reachable only from Azure services; the password is generated and never shown); and the GitHub deploy identity trusted only by ', steps('github').githubRepo, ' (main branch). First Owner: ', steps('owner').ownerEmail, '.')]"
+            }
+          },
+          {
+            "name": "summaryCost",
+            "type": "Microsoft.Common.InfoBox",
+            "visible": true,
+            "options": {
+              "icon": "Info",
+              "text": "[concat('Estimated cost: about $', string(add(steps('size').dbSize.low, 13)), '-', string(add(steps('size').dbSize.high, 18)), ' a month (approximate USD list prices). Nothing else is created; nothing more expensive is chosen for you.')]",
+              "uri": "https://github.com/AssistitTech/gmsp-deploy/blob/main/COSTS.md"
+            }
+          },
+          {
+            "name": "summaryNext",
+            "type": "Microsoft.Common.InfoBox",
+            "visible": true,
+            "options": {
+              "icon": "Info",
+              "text": "After you press Create (about 10-15 minutes), open the deployment's Outputs and do four things in your fork: 1) add the repository variables shown there (Settings > Secrets and variables > Actions > Variables; none is a secret), 2) Actions tab: enable workflows, 3) Actions > Deploy GMSP > Run workflow, 4) when it is green, open the portal address and sign in with the Owner email. GMSP's Setup guide then takes you through the Google side."
+            }
+          }
+        ]
+      }
+    ],
+    "outputs": {
+      "location": "[location()]",
+      "dbSkuName": "[steps('size').dbSize.sku]",
+      "databaseLocation": "[if(equals(steps('size').dbRegion, 'same'), '', steps('size').dbRegion)]",
+      "staticWebAppLocation": "[steps('size').swaRegion]",
+      "ownerEmail": "[steps('owner').ownerEmail]",
+      "githubRepository": "[steps('github').githubRepo]",
+      "githubRoleScope": "[steps('github').roleScope]"
+    }
+  }
+}

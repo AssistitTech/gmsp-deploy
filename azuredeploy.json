@@ -1,0 +1,524 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "_generator": {
+      "name": "bicep",
+      "version": "0.48.1.52935",
+      "templateHash": "6347862532494949854"
+    }
+  },
+  "parameters": {
+    "location": {
+      "type": "string",
+      "defaultValue": "[resourceGroup().location]",
+      "metadata": {
+        "description": "Region of the Function App, its storage and logs, and the deploy identity."
+      }
+    },
+    "suffix": {
+      "type": "string",
+      "defaultValue": "[take(uniqueString(resourceGroup().id), 5)]",
+      "minLength": 3,
+      "maxLength": 13,
+      "metadata": {
+        "description": "Short name suffix, lowercase letters and digits; the default is derived from the resource group, so names are unique and stable."
+      }
+    },
+    "dbSkuName": {
+      "type": "string",
+      "defaultValue": "Standard_B1ms",
+      "allowedValues": [
+        "Standard_B1ms",
+        "Standard_B2s",
+        "Standard_B2ms",
+        "Standard_D2s_v3",
+        "Standard_D2ds_v4"
+      ],
+      "metadata": {
+        "description": "PostgreSQL size. Standard_B1ms (Burstable) is the recommended size for one MSP."
+      }
+    },
+    "databaseLocation": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Region of the database server; empty means the same region as everything else."
+      }
+    },
+    "dbStorageGb": {
+      "type": "int",
+      "defaultValue": 32,
+      "allowedValues": [
+        32,
+        64,
+        128
+      ],
+      "metadata": {
+        "description": "Database storage in GB (the install wizard uses 32)."
+      }
+    },
+    "postgresVersion": {
+      "type": "string",
+      "defaultValue": "16",
+      "allowedValues": [
+        "16"
+      ],
+      "metadata": {
+        "description": "PostgreSQL major version (the install wizard uses 16)."
+      }
+    },
+    "staticWebAppLocation": {
+      "type": "string",
+      "defaultValue": "eastus2",
+      "allowedValues": [
+        "westus2",
+        "centralus",
+        "eastus2",
+        "westeurope",
+        "eastasia"
+      ],
+      "metadata": {
+        "description": "Region of the Static Web App resource (the portal itself is served worldwide)."
+      }
+    },
+    "ownerEmail": {
+      "type": "string",
+      "minLength": 3,
+      "metadata": {
+        "description": "Email address of the first Owner: the first sign-in with exactly this address becomes Owner (one time)."
+      }
+    },
+    "githubRepository": {
+      "type": "string",
+      "minLength": 3,
+      "metadata": {
+        "description": "Your fork of the GMSP distribution repository, as owner/name. Its workflow deploys GMSP here."
+      }
+    },
+    "githubRoleScope": {
+      "type": "string",
+      "defaultValue": "narrow",
+      "allowedValues": [
+        "narrow",
+        "resource-group"
+      ],
+      "metadata": {
+        "description": "narrow: Website Contributor on the Function App + Contributor on the Static Web App. resource-group: Contributor on the whole resource group."
+      }
+    },
+    "logDailyCapGb": {
+      "type": "string",
+      "defaultValue": "0.25",
+      "allowedValues": [
+        "0.1",
+        "0.25",
+        "0.5",
+        "1",
+        "-1"
+      ],
+      "metadata": {
+        "description": "Daily ingestion cap of the Log Analytics workspace, in GB (\"-1\" = no cap). Keeps the logs bill bounded."
+      }
+    },
+    "dbAdminPassword": {
+      "type": "securestring",
+      "defaultValue": "[format('Gm-{0}-{1}', newGuid(), toUpper(uniqueString(newGuid())))]",
+      "metadata": {
+        "description": "Generated; leave as is. The database password: upper, lower, digits and a symbol (Azure wants three of the four), URL-safe so the database URL needs no escaping. Never shown, never an output."
+      }
+    },
+    "secretStoreKey": {
+      "type": "securestring",
+      "defaultValue": "[format('{0}{1}', newGuid(), newGuid())]",
+      "metadata": {
+        "description": "Generated; leave as is. The secret-store key GMSP_SECRET_KEY: two GUIDs, not a Fernet key, so GMSP derives one from it with HKDF-SHA256 (gmsp/secretstore.py). Never shown, never an output."
+      }
+    }
+  },
+  "variables": {
+    "tags": {
+      "app": "gmsp"
+    },
+    "funcName": "[format('gmsp-api-{0}', parameters('suffix'))]",
+    "swaName": "[format('gmsp-portal-{0}', parameters('suffix'))]",
+    "dbName": "[format('gmsp-db-{0}', parameters('suffix'))]",
+    "storageName": "[format('gmspfn{0}', parameters('suffix'))]",
+    "logsName": "[format('gmsp-logs-{0}', parameters('suffix'))]",
+    "planName": "[format('gmsp-plan-{0}', parameters('suffix'))]",
+    "deployIdentityName": "[format('gmsp-github-deploy-{0}', parameters('suffix'))]",
+    "dbLocation": "[if(empty(parameters('databaseLocation')), parameters('location'), parameters('databaseLocation'))]",
+    "dbTier": "[if(startsWith(parameters('dbSkuName'), 'Standard_B'), 'Burstable', 'GeneralPurpose')]",
+    "dbAdmin": "gmspadmin",
+    "githubSubject": "[format('repo:{0}:ref:refs/heads/main', parameters('githubRepository'))]",
+    "federatedCredentialName": "[take(replace(replace(replace(format('github-{0}-main', parameters('githubRepository')), '/', '-'), '.', '-'), '_', '-'), 120)]",
+    "websiteContributor": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'de139f84-1756-47ae-9be6-808fbbe84772')]",
+    "contributor": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'b24988ac-6180-42a0-ab88-20f7382dd24c')]"
+  },
+  "resources": [
+    {
+      "type": "Microsoft.Storage/storageAccounts",
+      "apiVersion": "2023-05-01",
+      "name": "[variables('storageName')]",
+      "location": "[parameters('location')]",
+      "tags": "[variables('tags')]",
+      "sku": {
+        "name": "Standard_LRS"
+      },
+      "kind": "StorageV2",
+      "properties": {
+        "allowBlobPublicAccess": false,
+        "minimumTlsVersion": "TLS1_2",
+        "supportsHttpsTrafficOnly": true
+      }
+    },
+    {
+      "type": "Microsoft.OperationalInsights/workspaces",
+      "apiVersion": "2023-09-01",
+      "name": "[variables('logsName')]",
+      "location": "[parameters('location')]",
+      "tags": "[variables('tags')]",
+      "properties": {
+        "sku": {
+          "name": "PerGB2018"
+        },
+        "retentionInDays": 30,
+        "workspaceCapping": {
+          "dailyQuotaGb": "[json(parameters('logDailyCapGb'))]"
+        }
+      }
+    },
+    {
+      "type": "Microsoft.Insights/components",
+      "apiVersion": "2020-02-02",
+      "name": "[variables('funcName')]",
+      "location": "[parameters('location')]",
+      "tags": "[union(variables('tags'), createObject(format('hidden-link:{0}', resourceId('Microsoft.Web/sites', variables('funcName'))), 'Resource'))]",
+      "kind": "web",
+      "properties": {
+        "Application_Type": "web",
+        "WorkspaceResourceId": "[resourceId('Microsoft.OperationalInsights/workspaces', variables('logsName'))]"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.OperationalInsights/workspaces', variables('logsName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Web/serverfarms",
+      "apiVersion": "2024-04-01",
+      "name": "[variables('planName')]",
+      "location": "[parameters('location')]",
+      "tags": "[variables('tags')]",
+      "kind": "functionapp",
+      "sku": {
+        "name": "Y1",
+        "tier": "Dynamic"
+      },
+      "properties": {
+        "reserved": true
+      }
+    },
+    {
+      "type": "Microsoft.Web/sites",
+      "apiVersion": "2024-04-01",
+      "name": "[variables('funcName')]",
+      "location": "[parameters('location')]",
+      "tags": "[variables('tags')]",
+      "kind": "functionapp,linux",
+      "identity": {
+        "type": "SystemAssigned"
+      },
+      "properties": {
+        "serverFarmId": "[resourceId('Microsoft.Web/serverfarms', variables('planName'))]",
+        "httpsOnly": true,
+        "siteConfig": {
+          "linuxFxVersion": "PYTHON|3.12",
+          "ftpsState": "Disabled",
+          "minTlsVersion": "1.2",
+          "appSettings": [
+            {
+              "name": "AzureWebJobsStorage",
+              "value": "[format('DefaultEndpointsProtocol=https;AccountName={0};AccountKey={1};EndpointSuffix={2}', variables('storageName'), listKeys(resourceId('Microsoft.Storage/storageAccounts', variables('storageName')), '2023-05-01').keys[0].value, environment().suffixes.storage)]"
+            },
+            {
+              "name": "FUNCTIONS_EXTENSION_VERSION",
+              "value": "~4"
+            },
+            {
+              "name": "FUNCTIONS_WORKER_RUNTIME",
+              "value": "python"
+            },
+            {
+              "name": "APPLICATIONINSIGHTS_CONNECTION_STRING",
+              "value": "[reference(resourceId('Microsoft.Insights/components', variables('funcName')), '2020-02-02').ConnectionString]"
+            },
+            {
+              "name": "GMSP_DATABASE_URL",
+              "value": "[format('postgresql+psycopg://{0}:{1}@{2}:5432/gmsp?sslmode=require', variables('dbAdmin'), parameters('dbAdminPassword'), reference(resourceId('Microsoft.DBforPostgreSQL/flexibleServers', variables('dbName')), '2024-08-01').fullyQualifiedDomainName)]"
+            },
+            {
+              "name": "GMSP_ENV",
+              "value": "prod"
+            },
+            {
+              "name": "GMSP_SECRET_KEY",
+              "value": "[parameters('secretStoreKey')]"
+            },
+            {
+              "name": "GMSP_BOOTSTRAP_OWNER",
+              "value": "[toLower(trim(parameters('ownerEmail')))]"
+            },
+            {
+              "name": "SCM_DO_BUILD_DURING_DEPLOYMENT",
+              "value": "true"
+            },
+            {
+              "name": "ENABLE_ORYX_BUILD",
+              "value": "true"
+            }
+          ]
+        }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Insights/components', variables('funcName'))]",
+        "[resourceId('Microsoft.Web/serverfarms', variables('planName'))]",
+        "[resourceId('Microsoft.DBforPostgreSQL/flexibleServers', variables('dbName'))]",
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('storageName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Web/sites/basicPublishingCredentialsPolicies",
+      "apiVersion": "2024-04-01",
+      "name": "[format('{0}/{1}', variables('funcName'), 'ftp')]",
+      "properties": {
+        "allow": false
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Web/sites', variables('funcName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Web/staticSites",
+      "apiVersion": "2024-04-01",
+      "name": "[variables('swaName')]",
+      "location": "[parameters('staticWebAppLocation')]",
+      "tags": "[variables('tags')]",
+      "sku": {
+        "name": "Standard",
+        "tier": "Standard"
+      },
+      "properties": {
+        "allowConfigFileUpdates": true,
+        "stagingEnvironmentPolicy": "Disabled"
+      }
+    },
+    {
+      "type": "Microsoft.Web/staticSites/linkedBackends",
+      "apiVersion": "2024-04-01",
+      "name": "[format('{0}/{1}', variables('swaName'), 'backend')]",
+      "properties": {
+        "backendResourceId": "[resourceId('Microsoft.Web/sites', variables('funcName'))]",
+        "region": "[parameters('location')]"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Web/sites', variables('funcName'))]",
+        "[resourceId('Microsoft.Web/staticSites', variables('swaName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.DBforPostgreSQL/flexibleServers",
+      "apiVersion": "2024-08-01",
+      "name": "[variables('dbName')]",
+      "location": "[variables('dbLocation')]",
+      "tags": "[variables('tags')]",
+      "sku": {
+        "name": "[parameters('dbSkuName')]",
+        "tier": "[variables('dbTier')]"
+      },
+      "properties": {
+        "version": "[parameters('postgresVersion')]",
+        "administratorLogin": "[variables('dbAdmin')]",
+        "administratorLoginPassword": "[parameters('dbAdminPassword')]",
+        "storage": {
+          "storageSizeGB": "[parameters('dbStorageGb')]"
+        },
+        "backup": {
+          "backupRetentionDays": 7,
+          "geoRedundantBackup": "Disabled"
+        },
+        "highAvailability": {
+          "mode": "Disabled"
+        },
+        "network": {
+          "publicNetworkAccess": "Enabled"
+        }
+      }
+    },
+    {
+      "type": "Microsoft.DBforPostgreSQL/flexibleServers/databases",
+      "apiVersion": "2024-08-01",
+      "name": "[format('{0}/{1}', variables('dbName'), 'gmsp')]",
+      "properties": {
+        "charset": "UTF8",
+        "collation": "en_US.utf8"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.DBforPostgreSQL/flexibleServers', variables('dbName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.DBforPostgreSQL/flexibleServers/firewallRules",
+      "apiVersion": "2024-08-01",
+      "name": "[format('{0}/{1}', variables('dbName'), 'AllowAllAzureServicesAndResourcesWithinAzureIps')]",
+      "properties": {
+        "startIpAddress": "0.0.0.0",
+        "endIpAddress": "0.0.0.0"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.DBforPostgreSQL/flexibleServers', variables('dbName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.ManagedIdentity/userAssignedIdentities",
+      "apiVersion": "2023-01-31",
+      "name": "[variables('deployIdentityName')]",
+      "location": "[parameters('location')]",
+      "tags": "[variables('tags')]"
+    },
+    {
+      "type": "Microsoft.ManagedIdentity/userAssignedIdentities/federatedIdentityCredentials",
+      "apiVersion": "2023-01-31",
+      "name": "[format('{0}/{1}', variables('deployIdentityName'), variables('federatedCredentialName'))]",
+      "properties": {
+        "issuer": "https://token.actions.githubusercontent.com",
+        "subject": "[variables('githubSubject')]",
+        "audiences": [
+          "api://AzureADTokenExchange"
+        ]
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('deployIdentityName'))]"
+      ]
+    },
+    {
+      "condition": "[equals(parameters('githubRoleScope'), 'narrow')]",
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "scope": "[resourceId('Microsoft.Web/sites', variables('funcName'))]",
+      "name": "[guid(resourceId('Microsoft.Web/sites', variables('funcName')), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('deployIdentityName')), variables('websiteContributor'))]",
+      "properties": {
+        "roleDefinitionId": "[variables('websiteContributor')]",
+        "principalId": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('deployIdentityName')), '2023-01-31').principalId]",
+        "principalType": "ServicePrincipal"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('deployIdentityName'))]",
+        "[resourceId('Microsoft.Web/sites', variables('funcName'))]"
+      ]
+    },
+    {
+      "condition": "[equals(parameters('githubRoleScope'), 'narrow')]",
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "scope": "[resourceId('Microsoft.Web/staticSites', variables('swaName'))]",
+      "name": "[guid(resourceId('Microsoft.Web/staticSites', variables('swaName')), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('deployIdentityName')), variables('contributor'))]",
+      "properties": {
+        "roleDefinitionId": "[variables('contributor')]",
+        "principalId": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('deployIdentityName')), '2023-01-31').principalId]",
+        "principalType": "ServicePrincipal"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('deployIdentityName'))]",
+        "[resourceId('Microsoft.Web/staticSites', variables('swaName'))]"
+      ]
+    },
+    {
+      "condition": "[equals(parameters('githubRoleScope'), 'resource-group')]",
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "name": "[guid(resourceGroup().id, resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('deployIdentityName')), variables('contributor'))]",
+      "properties": {
+        "roleDefinitionId": "[variables('contributor')]",
+        "principalId": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('deployIdentityName')), '2023-01-31').principalId]",
+        "principalType": "ServicePrincipal"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('deployIdentityName'))]"
+      ]
+    }
+  ],
+  "outputs": {
+    "portalUrl": {
+      "type": "string",
+      "metadata": {
+        "description": "The portal. Open it after the first workflow run and sign in with the Owner email."
+      },
+      "value": "[format('https://{0}', reference(resourceId('Microsoft.Web/staticSites', variables('swaName')), '2024-04-01').defaultHostname)]"
+    },
+    "githubVariables": {
+      "type": "object",
+      "metadata": {
+        "description": "Repository VARIABLES for your fork (Settings > Secrets and variables > Actions > Variables). None is a secret."
+      },
+      "value": {
+        "AZURE_CLIENT_ID": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('deployIdentityName')), '2023-01-31').clientId]",
+        "AZURE_TENANT_ID": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('deployIdentityName')), '2023-01-31').tenantId]",
+        "AZURE_SUBSCRIPTION_ID": "[subscription().subscriptionId]",
+        "GMSP_RESOURCE_GROUP": "[resourceGroup().name]",
+        "GMSP_FUNCTION_APP": "[variables('funcName')]",
+        "GMSP_STATIC_WEB_APP": "[variables('swaName')]",
+        "GMSP_API_ACCESS": "false"
+      }
+    },
+    "ghVariableCommands": {
+      "type": "string",
+      "metadata": {
+        "description": "The same variables as GitHub CLI commands (run after `gh auth login`)."
+      },
+      "value": "[join(map(items(createObject('AZURE_CLIENT_ID', reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('deployIdentityName')), '2023-01-31').clientId, 'AZURE_TENANT_ID', reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('deployIdentityName')), '2023-01-31').tenantId, 'AZURE_SUBSCRIPTION_ID', subscription().subscriptionId, 'GMSP_RESOURCE_GROUP', resourceGroup().name, 'GMSP_FUNCTION_APP', variables('funcName'), 'GMSP_STATIC_WEB_APP', variables('swaName'), 'GMSP_API_ACCESS', 'false')), lambda('v', format('gh variable set {0} --repo {1} --body \"{2}\"', lambdaVariables('v').key, parameters('githubRepository'), lambdaVariables('v').value))), '\n')]"
+    },
+    "forkVariablesUrl": {
+      "type": "string",
+      "metadata": {
+        "description": "Where to add the variables in your fork."
+      },
+      "value": "[format('https://github.com/{0}/settings/variables/actions', parameters('githubRepository'))]"
+    },
+    "forkActionsUrl": {
+      "type": "string",
+      "metadata": {
+        "description": "Your fork's Actions tab: enable workflows, then Deploy GMSP > Run workflow."
+      },
+      "value": "[format('https://github.com/{0}/actions', parameters('githubRepository'))]"
+    },
+    "githubSubject": {
+      "type": "string",
+      "metadata": {
+        "description": "The federated credential subject the deploy identity trusts."
+      },
+      "value": "[variables('githubSubject')]"
+    },
+    "ownerEmail": {
+      "type": "string",
+      "metadata": {
+        "description": "The first Owner (one-time bootstrap; sign in with exactly this address)."
+      },
+      "value": "[toLower(trim(parameters('ownerEmail')))]"
+    },
+    "resources": {
+      "type": "object",
+      "metadata": {
+        "description": "Names of what was created."
+      },
+      "value": {
+        "functionApp": "[variables('funcName')]",
+        "staticWebApp": "[variables('swaName')]",
+        "database": "[variables('dbName')]",
+        "databaseSku": "[format('{0} ({1})', parameters('dbSkuName'), variables('dbTier'))]",
+        "databaseRegion": "[variables('dbLocation')]",
+        "deployIdentity": "[variables('deployIdentityName')]",
+        "logAnalytics": "[variables('logsName')]"
+      }
+    }
+  }
+}
