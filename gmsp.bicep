@@ -260,7 +260,7 @@ resource funcApp 'Microsoft.Web/sites@2024-04-01' = {
         }
         {
           name: 'GMSP_DATABASE_URL'
-          value: 'postgresql+psycopg://${dbAdmin}:${dbAdminPassword}@${postgres.properties.fullyQualifiedDomainName}:5432/gmsp?sslmode=require'
+          value: 'postgresql+psycopg://${dbAdmin}:${dbAdminPassword}@${postgres.properties.fullyQualifiedDomainName}:5432/gmsp?sslmode=verify-full'
         }
         {
           name: 'GMSP_ENV'
@@ -280,6 +280,17 @@ resource funcApp 'Microsoft.Web/sites@2024-04-01' = {
   dependsOn: [
     deploymentContainer
   ]
+}
+
+// No SCM basic-auth publishing credentials: code reaches the Function App only through ARM / Entra (the wizard's az
+// login, the fork workflow's OIDC identity), so a publishing profile cannot push code that runs as GMSP. Flex
+// Consumption has no FTP endpoint, so there is no `ftp` policy to write (the wizard still tries both on older plans).
+resource funcScmBasicAuth 'Microsoft.Web/sites/basicPublishingCredentialsPolicies@2024-04-01' = {
+  parent: funcApp
+  name: 'scm'
+  properties: {
+    allow: false
+  }
 }
 
 // The app's identity on its own storage account (host storage + the deployment container). No storage key is used.

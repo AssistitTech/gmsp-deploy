@@ -88,6 +88,40 @@ Or with the Azure CLI:
 
 If Azure refuses Burstable on your subscription, upgrade the subscription first (above), then downsize.
 
+## Optional: a private database network (about $8 more a month)
+
+**What the standard install does.** The database server accepts connections over the internet, but its firewall admits
+only addresses inside Azure (the rule "Allow public access from any Azure service", `0.0.0.0`). That keeps GMSP cheap and
+simple: the API on the Flex Consumption plan reaches the database without a virtual network. The trade-off: "inside
+Azure" means **any** Azure customer's machine (GitHub-hosted runners are Azure machines too), so the only barriers are
+the generated database password, TLS (GMSP verifies the server certificate, `sslmode=verify-full`) and PostgreSQL itself.
+For most MSPs that is acceptable; it is a choice, not an oversight.
+
+**Closing it.** Put the API on a virtual network and give the database a private endpoint; then switch public access
+off. Extra cost: the private endpoint (about $7.30 a month plus about $0.01 per GB through it) and the private DNS zone
+(about $0.50 a month); the virtual network and Flex Consumption's VNet integration cost nothing. Steps (Azure CLI,
+replace the `<...>` values; plan a few minutes of database downtime between steps 5 and 6):
+
+1. A virtual network with two subnets, one delegated to Flex Consumption apps and one for the private endpoint:
+   `az network vnet create -g <rg> -n gmsp-vnet --address-prefixes 10.20.0.0/16 --subnet-name api --subnet-prefixes 10.20.1.0/24`
+   `az network vnet subnet update -g <rg> --vnet-name gmsp-vnet -n api --delegations Microsoft.App/environments`
+   `az network vnet subnet create -g <rg> --vnet-name gmsp-vnet -n db --address-prefixes 10.20.2.0/24`
+2. Put the API on it: `az functionapp vnet-integration add -g <rg> -n gmsp-api-<suffix> --vnet gmsp-vnet --subnet api`
+3. The private DNS zone, linked to the network, so the database's usual host name resolves to the private address
+   (the name, and so the certificate check, stays `gmsp-db-<suffix>.postgres.database.azure.com`):
+   `az network private-dns zone create -g <rg> -n privatelink.postgres.database.azure.com`
+   `az network private-dns link vnet create -g <rg> -z privatelink.postgres.database.azure.com -n gmsp-db-link -v gmsp-vnet -e false`
+4. The private endpoint and its DNS record:
+   `az network private-endpoint create -g <rg> -n gmsp-db-pe --vnet-name gmsp-vnet --subnet db --private-connection-resource-id $(az postgres flexible-server show -g <rg> -n gmsp-db-<suffix> --query id -o tsv) --group-id postgresqlServer --connection-name gmsp-db`
+   `az network private-endpoint dns-zone-group create -g <rg> --endpoint-name gmsp-db-pe -n default --private-dns-zone privatelink.postgres.database.azure.com --zone-name postgres`
+5. Check the portal still loads and lists your tenants (that is the API reading the database over the private endpoint).
+6. Close the public door: `az postgres flexible-server firewall-rule delete -g <rg> -n gmsp-db-<suffix> --rule-name AllowAllAzureServicesAndResourcesWithinAzureIps --yes`
+   and `az postgres flexible-server update -g <rg> -n gmsp-db-<suffix> --public-access Disabled`.
+
+Nothing else in GMSP changes: the deploy workflow and the wizard's `--deploy-only` never connect to the database. These
+steps are not run by the installers and were not tested against a live installation; check them in a test resource
+group first. To undo, re-add the firewall rule and set `--public-access Enabled`.
+
 ## Keeping an eye on it
 
 - Azure portal > **Cost Management > Budgets**: create a monthly budget for the resource group (for example $40) with
