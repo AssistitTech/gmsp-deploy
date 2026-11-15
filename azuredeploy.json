@@ -18,11 +18,11 @@
     },
     "suffix": {
       "type": "string",
-      "defaultValue": "[take(uniqueString(resourceGroup().id), 5)]",
+      "defaultValue": "[take(uniqueString(resourceGroup().id), 10)]",
       "minLength": 3,
       "maxLength": 13,
       "metadata": {
-        "description": "Short name suffix, lowercase letters and digits; the default is derived from the resource group, so names are unique and stable."
+        "description": "Short name suffix, lowercase letters and digits; the default (10 characters) is derived from the resource group, so names are unique, stable and not guessable from a short list. An existing install keeps its own suffix: pass it here when re-deploying."
       }
     },
     "dbSkuName": {
@@ -134,6 +134,13 @@
       "defaultValue": "[format('{0}{1}', newGuid(), newGuid())]",
       "metadata": {
         "description": "Generated; leave as is. The secret-store key GMSP_SECRET_KEY: two GUIDs, not a Fernet key, so GMSP derives one from it with HKDF-SHA256 (gmsp/secretstore.py). Never shown, never an output."
+      }
+    },
+    "deployedAt": {
+      "type": "string",
+      "defaultValue": "[utcNow('o')]",
+      "metadata": {
+        "description": "Generated; leave as is. The deployment time: the one-time first-Owner bootstrap (GMSP_BOOTSTRAP_OWNER) can be claimed for seven days after it (GMSP_BOOTSTRAP_EXPIRES)."
       }
     }
   },
@@ -309,6 +316,10 @@
             {
               "name": "GMSP_BOOTSTRAP_OWNER",
               "value": "[toLower(trim(parameters('ownerEmail')))]"
+            },
+            {
+              "name": "GMSP_BOOTSTRAP_EXPIRES",
+              "value": "[dateTimeAdd(parameters('deployedAt'), 'P7D', 'yyyy-MM-ddTHH:mm:ssZ')]"
             }
           ]
         }

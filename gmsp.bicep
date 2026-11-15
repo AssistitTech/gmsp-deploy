@@ -33,10 +33,10 @@ targetScope = 'resourceGroup'
 @description('Region of the Function App, its storage and logs, and the deploy identity. It must offer the Flex Consumption plan (az functionapp list-flexconsumption-locations); the Deploy to Azure wizard checks it.')
 param location string = resourceGroup().location
 
-@description('Short name suffix, lowercase letters and digits; the default is derived from the resource group, so names are unique and stable.')
+@description('Short name suffix, lowercase letters and digits; the default (10 characters) is derived from the resource group, so names are unique, stable and not guessable from a short list. An existing install keeps its own suffix: pass it here when re-deploying.')
 @minLength(3)
 @maxLength(13)
-param suffix string = take(uniqueString(resourceGroup().id), 5)
+param suffix string = take(uniqueString(resourceGroup().id), 10)
 
 @description('PostgreSQL size. Standard_B1ms (Burstable) is the recommended size for one MSP.')
 @allowed([
@@ -108,6 +108,9 @@ param dbAdminPassword string = 'Gm-${newGuid()}-${toUpper(uniqueString(newGuid()
 @description('Generated; leave as is. The secret-store key GMSP_SECRET_KEY: two GUIDs, not a Fernet key, so GMSP derives one from it with HKDF-SHA256 (gmsp/secretstore.py). Never shown, never an output.')
 @secure()
 param secretStoreKey string = '${newGuid()}${newGuid()}'
+
+@description('Generated; leave as is. The deployment time: the one-time first-Owner bootstrap (GMSP_BOOTSTRAP_OWNER) can be claimed for seven days after it (GMSP_BOOTSTRAP_EXPIRES).')
+param deployedAt string = utcNow('o')
 
 var tags = {
   app: 'gmsp'
@@ -273,6 +276,10 @@ resource funcApp 'Microsoft.Web/sites@2024-04-01' = {
         {
           name: 'GMSP_BOOTSTRAP_OWNER'
           value: toLower(trim(ownerEmail))
+        }
+        {
+          name: 'GMSP_BOOTSTRAP_EXPIRES'
+          value: dateTimeAdd(deployedAt, 'P7D', 'yyyy-MM-ddTHH:mm:ssZ')
         }
       ]
     }
